@@ -560,7 +560,7 @@ class SocketIO(EngineIO):
         ack_callback(*data_parsed.args)
 
     def _on_error(self, data_parsed, namespace):
-        namespace._find_packet_callback('error')(*data_parsed.args)
+        namespace._find_packet_callback('error')(data_parsed.args)
 
     def _on_binary_event(self, data_parsed, namespace):
         self.placeholder = data_parsed
