@@ -2,7 +2,7 @@ import json
 import six
 from collections import namedtuple
 from six.moves.urllib.parse import urlparse as parse_url
-from base64 import b64encode
+from base64 import b64encode,b64decode
 from copy import deepcopy
 
 from .symmetries import decode_string, encode_string, get_byte, get_character, get_int
@@ -177,8 +177,15 @@ def format_packet(packet_type, packet_data):
 
 
 def parse_packet(packet_text):
-    packet_type = get_int(packet_text, 0)
-    packet_data = packet_text[1:]
+    # 'b' --> binary base64 encoded packet
+    if isinstance(packet_text, six.binary_type) and six.byte2int(packet_text[0:1]) == 98:
+        packet_text = packet_text[1:]
+        packet_type = get_int(packet_text, 0)
+        packet_data = b64decode(packet_text[1:])
+    else:
+        packet_type = get_int(packet_text, 0)
+        packet_data = packet_text[1:]
+
     return packet_type, packet_data
 
 
@@ -191,9 +198,7 @@ def format_packet_text(packet_type, packet_data):
 
 
 def parse_packet_text(packet_text):
-    packet_type = get_int(packet_text, 0)
-    packet_data = packet_text[1:]
-    return packet_type, packet_data
+    return parse_packet(packet_text)
 
 
 def get_namespace_path(socketIO_packet_data):
