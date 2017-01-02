@@ -221,8 +221,6 @@ class EngineIO(LoggingMixin):
     @retry
     def _message(self, engineIO_packet_data, with_transport_instance=False):
         engineIO_packet_type = '4'
-        if isinstance(engineIO_packet_data, bytearray):
-            engineIO_packet_type = 'b' + engineIO_packet_type
         if with_transport_instance:
             transport = self._transport_instance
         else:
