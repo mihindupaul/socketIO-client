@@ -92,7 +92,7 @@ def decode_engineIO_content(content):
     content_length = len(content)
     while content_index < content_length:
         try:
-            content_index, packet_length = _read_packet_length(
+            content_index, packet_length = _read_packet_length2(
                 content, content_index)
         except IndexError:
             break
@@ -221,6 +221,19 @@ def _make_packet_prefix(packet):
         header_digits.append(ord(length_string[i]) - 48)
     header_digits.append(255)
     return header_digits
+
+# extra function to support XHR1 style protocol
+def _read_packet_length2(content, content_index):
+    packet_length_string = ''
+    #print content,content_index
+    while get_byte(content, content_index) != ord(':'):
+        #print content,content_index
+        byte = get_byte(content, content_index)
+        packet_length_string += chr(byte)
+        #print packet_length_string
+        content_index += 1
+    content_index += 1
+    return content_index, int(packet_length_string)    
 
 
 def _read_packet_length(content, content_index):
