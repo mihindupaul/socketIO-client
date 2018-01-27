@@ -6,17 +6,18 @@ from .logs import LoggingMixin
 from .namespaces import (
     EngineIONamespace, SocketIONamespace,
     LoggingSocketIONamespace, find_callback, make_logging_prefix)
+
 from .parsers import (
     parse_host, parse_engineIO_session,
-    format_socketIO_packet_data, parse_socketIO_packet_data,
+    format_socketIO_packet_data, parse_socketIO_packet,
     get_namespace_path)
-from .symmetries import get_character
+from .symmetries import get_character, get_int
 from .transports import (
     WebsocketTransport, XHR_PollingTransport, prepare_http_session, TRANSPORTS)
 
 
 __all__ = 'SocketIO', 'SocketIONamespace'
-__version__ = '0.7.2'
+__version__ = '0.7.3'
 BaseNamespace = SocketIONamespace
 LoggingNamespace = LoggingSocketIONamespace
 
@@ -48,6 +49,7 @@ class EngineIO(LoggingMixin):
         self._opened = False
         self._wants_to_close = False
         atexit.register(self._close)
+
 
         if Namespace:
             self.define(Namespace)
@@ -197,6 +199,7 @@ class EngineIO(LoggingMixin):
         except AttributeError:
             pass
         if not hasattr(self, '_opened') or not self._opened:
+
             return
         engineIO_packet_type = 1
         try:
@@ -217,7 +220,7 @@ class EngineIO(LoggingMixin):
 
     @retry
     def _message(self, engineIO_packet_data, with_transport_instance=False):
-        engineIO_packet_type = 4
+        engineIO_packet_type = '4'
         if with_transport_instance:
             transport = self._transport_instance
         else:
@@ -264,6 +267,7 @@ class EngineIO(LoggingMixin):
                 try:
                     namespace = self.get_namespace()
                     namespace._find_packet_callback('disconnect')()
+
                 except PacketError:
                     pass
         self._heartbeat_thread.relax()
@@ -348,6 +352,7 @@ class SocketIO(EngineIO):
         self._namespace_by_path = {}
         self._callback_by_ack_id = {}
         self._ack_id = 0
+        self.placeholder = None
         super(SocketIO, self).__init__(
             host, port, Namespace, wait_for_connection, transports,
             resource, hurry_interval_in_seconds, **kw)
@@ -399,7 +404,7 @@ class SocketIO(EngineIO):
     def connect(self, path='', with_transport_instance=False):
         if path or not self.connected:
             socketIO_packet_type = 0
-            socketIO_packet_data = format_socketIO_packet_data(path)
+            socketIO_packet_data, _ = format_socketIO_packet_data(path)
             self._message(
                 str(socketIO_packet_type) + socketIO_packet_data,
                 with_transport_instance)
@@ -407,8 +412,10 @@ class SocketIO(EngineIO):
 
     def disconnect(self, path=''):
         if path and self._opened:
+
+
             socketIO_packet_type = 1
-            socketIO_packet_data = format_socketIO_packet_data(path)
+            socketIO_packet_data, _ = format_socketIO_packet_data(path)
             try:
                 self._message(str(socketIO_packet_type) + socketIO_packet_data)
             except (TimeoutError, ConnectionError):
@@ -424,13 +431,19 @@ class SocketIO(EngineIO):
             pass
 
     def emit(self, event, *args, **kw):
+        socketIO_packet_type = 2
         path = kw.get('path', '')
         callback, args = find_callback(args, kw)
         ack_id = self._set_ack_callback(callback) if callback else None
         args = [event] + list(args)
-        socketIO_packet_type = 2
-        socketIO_packet_data = format_socketIO_packet_data(path, ack_id, args)
+        socketIO_packet_data, binary_packets = format_socketIO_packet_data(
+            path, ack_id, args)
+        if binary_packets:
+            socketIO_packet_type += 3
         self._message(str(socketIO_packet_type) + socketIO_packet_data)
+
+        for packet in binary_packets:
+            self._message(packet)
 
     def send(self, data='', callback=None, **kw):
         path = kw.get('path', '')
@@ -441,8 +454,14 @@ class SocketIO(EngineIO):
 
     def _ack(self, path, ack_id, *args):
         socketIO_packet_type = 3
-        socketIO_packet_data = format_socketIO_packet_data(path, ack_id, args)
+        socketIO_packet_data, binary_packets = format_socketIO_packet_data(
+            path, ack_id, args)
+        if binary_packets:
+            socketIO_packet_type += 3
         self._message(str(socketIO_packet_type) + socketIO_packet_data)
+
+        for packet in binary_packets:
+            self._message(packet)
 
     # React
 
@@ -455,10 +474,14 @@ class SocketIO(EngineIO):
             if getattr(namespace, '_invalid', False):
                 raise ConnectionError(
                     'invalid socket.io namespace (%s)' % namespace.path)
+
+
+
             if not getattr(namespace, '_connected', False):
                 self._debug(
                     '%s[socket.io waiting for connection]',
                     make_logging_prefix(namespace.path))
+
                 return False
             return True
         if for_callbacks and not self._has_ack_callback:
@@ -470,11 +493,23 @@ class SocketIO(EngineIO):
         if engineIO_packet_data is None:
             return
         self._debug('[socket.io packet received] %s', engineIO_packet_data)
-        socketIO_packet_type = int(get_character(engineIO_packet_data, 0))
-        socketIO_packet_data = engineIO_packet_data[1:]
+
+        if self.placeholder:
+            self.placeholder.add(engineIO_packet_data)
+
+            if not self.placeholder.finished:
+                return engineIO_packet_data
+
+            socketIO_packet_data = self.placeholder
+            self.placeholder = None
+            socketIO_packet_data.type -= 3
+        else:
+            socketIO_packet_data = parse_socketIO_packet(engineIO_packet_data)
+            socketIO_packet_data.namespace = self.get_namespace(socketIO_packet_data.path)
+        socketIO_packet_type = socketIO_packet_data.type
         # Launch callbacks
-        path = get_namespace_path(socketIO_packet_data)
-        namespace = self.get_namespace(path)
+        namespace = socketIO_packet_data.namespace
+
         try:
             delegate = {
                 0: self._on_connect,
@@ -488,7 +523,8 @@ class SocketIO(EngineIO):
         except KeyError:
             raise PacketError(
                 'unexpected socket.io packet type (%s)' % socketIO_packet_type)
-        delegate(parse_socketIO_packet_data(socketIO_packet_data), namespace)
+        delegate(socketIO_packet_data, namespace)
+
         return socketIO_packet_data
 
     def _on_connect(self, data_parsed, namespace):
@@ -503,6 +539,7 @@ class SocketIO(EngineIO):
 
     def _on_event(self, data_parsed, namespace):
         args = data_parsed.args
+
         try:
             event = args.pop(0)
         except IndexError:
@@ -510,6 +547,7 @@ class SocketIO(EngineIO):
         if data_parsed.ack_id is not None:
             args.append(self._prepare_to_send_ack(
                 data_parsed.path, data_parsed.ack_id))
+
         namespace._find_packet_callback(event)(*args)
 
     def _on_ack(self, data_parsed, namespace):
@@ -520,13 +558,13 @@ class SocketIO(EngineIO):
         ack_callback(*data_parsed.args)
 
     def _on_error(self, data_parsed, namespace):
-        namespace._find_packet_callback('error')(*data_parsed.args)
+        namespace._find_packet_callback('error')(data_parsed.args)
 
     def _on_binary_event(self, data_parsed, namespace):
-        self._warn('[not implemented] binary event')
+        self.placeholder = data_parsed
 
     def _on_binary_ack(self, data_parsed, namespace):
-        self._warn('[not implemented] binary ack')
+        self.placeholder = data_parsed
 
     def _prepare_to_send_ack(self, path, ack_id):
         'Return function that acknowledges the server'
